@@ -213,6 +213,7 @@ void XC7Packer::pack_carries()
     pool<IdString> lut_types{id_LUT1, id_LUT2, id_LUT3, id_LUT4, id_LUT5};
 
     pool<IdString> folded_nets;
+    int moved = 0, duplicated = 0;
 
     for (auto &grp : groups) {
         std::vector<CellInfo *> carry4s;
@@ -277,12 +278,15 @@ void XC7Packer::pack_carries()
             pool<IdString> unique_lut_inputs;
             int s_inputs = 0;
             // Check that S and DI are validy and unqiuely driven by LUTs
-            // FIXME: in multiple fanout cases, cell duplication will probably be cheaper
-            // than feed-throughs
             CellInfo *s_lut = nullptr, *di_lut = nullptr;
+            // A LUT that drives S and other loads is moved into the carry site when it
+            // is free, or duplicated there when it is already clustered (see below)
+            CellInfo *s_dup_source = nullptr;
+            pool<IdString> s_dup_inputs;
             if (c4_s) {
-                if (c4_s->users.entries() == 1 && c4_s->driver.cell != nullptr &&
-                    lut_types.count(c4_s->driver.cell->type)) {
+                const bool s_driven_by_lut = c4_s->driver.cell != nullptr && lut_types.count(c4_s->driver.cell->type);
+                const bool s_is_only_load = c4_s->users.entries() == 1;
+                if (s_driven_by_lut && s_is_only_load) {
                     s_lut = c4_s->driver.cell;
                     for (int j = 0; j < 5; j++) {
                         NetInfo *ix = s_lut->getPort(ctx->idf("I%d", j));
@@ -290,6 +294,13 @@ void XC7Packer::pack_carries()
                             unique_lut_inputs.insert(ix->name);
                             s_inputs++;
                         }
+                    }
+                } else if (s_driven_by_lut) {
+                    s_dup_source = c4_s->driver.cell;
+                    for (int j = 0; j < 5; j++) {
+                        NetInfo *ix = s_dup_source->getPort(ctx->idf("I%d", j));
+                        if (ix)
+                            s_dup_inputs.insert(ix->name);
                     }
                 }
             }
@@ -303,6 +314,52 @@ void XC7Packer::pack_carries()
                             unique_lut_inputs.insert(ix->name);
                         }
                     }
+                }
+            }
+            if (s_dup_source) {
+                // On a 7-series slice the O6 of the LUT in position z drives the CARRY4 S
+                // input, the flip-flop D mux (AFFMUX) and the slice output pin at once.
+                // The single-load check above is a packer simplification, not a silicon
+                // limit: the LUT can sit in the carry site and its other loads leave
+                // through O6. abc9, always on in synth_xilinx since yosys 0.69, makes
+                // that sharing common: a counter's bit-0 inverter drives S[0] and the
+                // bit-0 flip-flop. Move the LUT in when it is not clustered yet. If an
+                // earlier S already absorbed it, duplicate instead: the copy drives only
+                // this S and the original keeps its other loads. Either replaces the
+                // route-through, and only when the inputs fit beside the DI LUT or its
+                // feed-through, inside the same 5-input budget.
+                pool<IdString> shared_inputs = unique_lut_inputs;
+                for (IdString ix : s_dup_inputs)
+                    shared_inputs.insert(ix);
+                const int shared_input_count = int(shared_inputs.size()) + (di_lut ? 0 : 1);
+                const bool duplicate_fits = shared_input_count <= 5;
+                const bool source_is_free = s_dup_source->cluster == ClusterId();
+                if (duplicate_fits && source_is_free) {
+                    s_lut = s_dup_source;
+                    s_inputs = int(s_dup_inputs.size());
+                    unique_lut_inputs = shared_inputs;
+                    ++moved;
+                } else if (duplicate_fits) {
+                    CellInfo *dup = ctx->createCell(ctx->idf("%s$S_DUP%d", s_dup_source->name.c_str(ctx), ++autoidx),
+                                                    s_dup_source->type);
+                    NetInfo *dup_out = ctx->createNet(ctx->idf("%s$S_DUP%d", c4_s->name.c_str(ctx), ++autoidx));
+                    for (int j = 0; j < 5; j++) {
+                        IdString ip = ctx->idf("I%d", j);
+                        const bool source_has_input = s_dup_source->ports.count(ip);
+                        if (!source_has_input)
+                            continue;
+                        dup->addInput(ip);
+                        dup->connectPort(ip, s_dup_source->getPort(ip));
+                    }
+                    dup->addOutput(id_O);
+                    dup->connectPort(id_O, dup_out);
+                    dup->params = s_dup_source->params;
+                    c4->disconnectPort(ctx->idf("S[%d]", z));
+                    c4->connectPort(ctx->idf("S[%d]", z), dup_out);
+                    s_lut = dup;
+                    s_inputs = int(s_dup_inputs.size());
+                    unique_lut_inputs = shared_inputs;
+                    ++duplicated;
                 }
             }
             int lut_inp_count = int(unique_lut_inputs.size());
@@ -351,6 +408,10 @@ void XC7Packer::pack_carries()
         }
     }
     flush_cells();
+    if (moved > 0)
+        log_info("   Moved %d shared LUTs driving carry S inputs into the carry site.\n", moved);
+    if (duplicated > 0)
+        log_info("   Duplicated %d shared LUTs driving carry S inputs.\n", duplicated);
 
     for (auto net : folded_nets)
         ctx->nets.erase(net);
