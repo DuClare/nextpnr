@@ -198,6 +198,14 @@ USR_ACCESSE2, DCIRESET — single-site preplacement per fork
 `pack_io_xc7.cc:1232` (`d42d6c9b`) + FASM emission. Depends on the
 preplacement mechanism from WP1.
 
+BSCANE2 is the exception to the fork's rule: preplacing it on the first free
+BSCAN bel is wrong, because USER<n> is served by site BSCAN_X0Y<n-1> and a
+BSCAN site's pins *are* that chain's SEL/CAPTURE/SHIFT/DRCK wires.  A design
+with more than one instance got its second one placed on another chain's
+site and answered the wrong user register.  The port binds each instance to
+the site its JTAG_CHAIN selects instead (`bscan_bels_by_chain`), reports a
+site already taken, and leaves a bel the design pinned itself alone.
+
 ### WP7 — GT transceivers (GTPE2/GTXE2) (larger) — ✅ DONE
 Ported `pack_gt_xc7.cc` (pack_gt/constrain_gt/constrain_ibufds_gt_site via
 bindBel + SiteIndex instead of the fork's BEL-attr strings) and the five
@@ -246,10 +254,12 @@ as a separate project with its own documents.
   workflow's failure message.)
 - ✅ part-form / bare-die device names accepted (CI shim derives the device
   from the chipdb filename).
-- ✅ xilinx gtest coverage: `uarch/xilinx/tests/pack_test.cc` (8 packer
-  tests: STARTUPE2/BSCANE2 cfg packing + preplacement, BUFH/BUFHCE, BUFR,
-  IBUFGDS alias, SRL cascade pair/off-slice clustering, PCIE_2_1 retype +
-  preplacement on k325t), wired via TEST_SOURCES.
+- ✅ xilinx gtest coverage: `uarch/xilinx/tests/pack_test.cc` (10 packer
+  tests: STARTUPE2 cfg packing + preplacement, BSCANE2 packing bound to the
+  site its JTAG_CHAIN selects (that site, two chains in one design, a
+  duplicate chain rejected), BUFH/BUFHCE, BUFR, IBUFGDS alias, SRL cascade
+  pair/off-slice clustering, PCIE_2_1 retype + preplacement on k325t), wired
+  via TEST_SOURCES.
 - ✅ archcheck fully green on all seven devices (`--test` on the main
   binary — note the gtest binary ignores `--test`).  Fixes: non-primary
   variant bels get a `~<variant>` name suffix; site pips are deduped per

@@ -205,6 +205,9 @@ struct XC7Packer : public XilinxPacker
     void pack_iologic();
     void pack_idelayctrl();
     void pack_cfg();
+    // JTAG chain number -> the BSCAN bel of the site that serves it.  USER<n>
+    // is served by BSCAN_X0Y<n-1>, and the site's pins are that chain's.
+    dict<int, BelId> bscan_bels_by_chain();
 
     // GT transceivers
     SiteIndex get_gt_site(BelId pad_bel, IdString want);
