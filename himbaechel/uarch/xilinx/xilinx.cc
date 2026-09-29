@@ -607,11 +607,14 @@ void XilinxImpl::apply_preplaced(bool verbose)
     std::string line;
     while (std::getline(in, line)) {
         auto tab = line.find('\t');
-        if (tab == std::string::npos)
+        const bool line_has_no_tab = (tab == std::string::npos);
+        if (line_has_no_tab)
             continue;
         auto it = ctx->cells.find(ctx->id(line.substr(0, tab)));
-        if (it == ctx->cells.end()) {
-            if (verbose && missing < 40)
+        const bool this_design_has_no_such_cell = (it == ctx->cells.end());
+        if (this_design_has_no_such_cell) {
+            const bool note_this_missing_cell = verbose && missing < 40;
+            if (note_this_missing_cell)
                 log_info("Pre-placed: no cell '%s' in this design\n", line.substr(0, tab).c_str());
             missing++;
             continue;
@@ -622,7 +625,8 @@ void XilinxImpl::apply_preplaced(bool verbose)
         // them would need site routing (bypass pins, output muxes) the
         // reference routes may already lock, and the router cannot rip those up.
         BelId bel = ctx->getBelByNameStr(line.substr(tab + 1));
-        if (bel != BelId())
+        const bool bel_name_resolved = (bel != BelId());
+        if (bel_name_resolved)
             frozen_tiles.insert(bel.tile);
     }
     if (verbose)
@@ -650,12 +654,14 @@ void XilinxImpl::apply_holdbufs()
     while (std::getline(in, line)) {
         std::vector<std::string> f;
         boost::split(f, line, boost::is_any_of("\t"));
-        if (f.size() != 5)
+        const bool record_is_malformed = (f.size() != 5);
+        if (record_is_malformed)
             continue;
         IdString buf_name = ctx->id(f[0]), in_net = ctx->id(f[1]), out_net = ctx->id(f[2]), sink_name = ctx->id(f[3]),
                  sink_port = ctx->id(f[4]);
-        if (!ctx->nets.count(in_net) || !ctx->cells.count(sink_name) || ctx->cells.count(buf_name) ||
-            ctx->nets.count(out_net)) {
+        const bool buffer_is_not_as_in_the_reference = !ctx->nets.count(in_net) || !ctx->cells.count(sink_name) ||
+                                                       ctx->cells.count(buf_name) != 0 || ctx->nets.count(out_net) != 0;
+        if (buffer_is_not_as_in_the_reference) {
             log_info("holdbufs: %s skipped (net %s, sink %s: not as in the reference)\n", f[0].c_str(), f[1].c_str(),
                      f[3].c_str());
             skipped++;
@@ -663,7 +669,8 @@ void XilinxImpl::apply_holdbufs()
         }
         NetInfo *net = ctx->nets.at(in_net).get();
         CellInfo *sink = ctx->cells.at(sink_name).get();
-        if (sink->getPort(sink_port) != net) {
+        const bool sink_port_is_not_on_that_net = (sink->getPort(sink_port) != net);
+        if (sink_port_is_not_on_that_net) {
             log_info("holdbufs: %s skipped (%s.%s is not on %s)\n", f[0].c_str(), f[3].c_str(), f[4].c_str(),
                      f[1].c_str());
             skipped++;
@@ -684,7 +691,8 @@ void XilinxImpl::apply_holdbufs()
         made++;
     }
     log_info("Hold buffers: %d re-created from the reference, %d skipped.\n", made, skipped);
-    if (made) {
+    const bool some_buffer_was_re_created = made != 0;
+    if (some_buffer_was_re_created) {
         ctx->assignArchInfo();
         assign_cell_tags();
     }
@@ -704,28 +712,35 @@ void XilinxImpl::close_routed_tiles()
     int closed = 0;
     while (std::getline(in, line)) {
         auto tab = line.find('\t');
-        if (tab == std::string::npos)
+        const bool line_has_no_tab = (tab == std::string::npos);
+        if (line_has_no_tab)
             continue;
         size_t pos = tab + 1;
         while (pos < line.size()) {
             size_t semi = line.find(';', pos);
-            if (semi == std::string::npos)
+            const bool no_more_separators = (semi == std::string::npos);
+            if (no_more_separators)
                 semi = line.size();
             // a wire is "<tile>/<name>", a pip "<tile>/<dst>/<src>", a strength a number: only wires wanted
             std::string tok = line.substr(pos, semi - pos);
             pos = semi + 1;
-            if (tok.empty() || std::count(tok.begin(), tok.end(), '/') != 1)
+            const bool token_is_not_a_wire = tok.empty() || std::count(tok.begin(), tok.end(), '/') != 1;
+            if (token_is_not_a_wire)
                 continue;
             WireId w = ctx->getWireByName(IdStringList::parse(ctx, tok));
-            if (w == WireId() || w.tile < 0)
+            const bool wire_name_did_not_resolve = (w == WireId() || w.tile < 0);
+            if (wire_name_did_not_resolve)
                 continue;
             auto close = [&](int tile) {
-                if (tile < 0 || tile >= ctx->chip_info->width * ctx->chip_info->height)
+                const bool tile_is_out_of_range = tile < 0 || tile >= ctx->chip_info->width * ctx->chip_info->height;
+                if (tile_is_out_of_range)
                     return;
                 BelId probe;
                 probe.tile = tile;
                 probe.index = 0;
-                if ((is_logic_tile(probe) || is_bram_tile(probe)) && !frozen_tiles.count(tile)) {
+                const bool tile_holds_cells_and_is_not_closed_yet =
+                        (is_logic_tile(probe) || is_bram_tile(probe)) && frozen_tiles.count(tile) == 0;
+                if (tile_holds_cells_and_is_not_closed_yet) {
                     frozen_tiles.insert(tile);
                     closed++;
                 }
@@ -736,18 +751,23 @@ void XilinxImpl::close_routed_tiles()
             // -- a bounce through BYP_ALT7 -- can be the only way into a pin
             // (DX) a new cell there would need.
             std::string wn = tok.substr(tok.find('/') + 1);
-            if (wn.rfind("BYP", 0) == 0 || wn.rfind("FAN", 0) == 0 || wn.rfind("IMUX", 0) == 0 ||
-                wn.rfind("CTRL", 0) == 0 || wn.rfind("GFAN", 0) == 0) {
+            const bool wire_feeds_a_site_pin = wn.rfind("BYP", 0) == 0 || wn.rfind("FAN", 0) == 0 ||
+                                               wn.rfind("IMUX", 0) == 0 || wn.rfind("CTRL", 0) == 0 ||
+                                               wn.rfind("GFAN", 0) == 0;
+            if (wire_feeds_a_site_pin) {
                 int x, y;
                 tile_xy(ctx->chip_info, w.tile, x, y);
-                if (x > 0)
+                const bool tile_has_a_neighbour_to_the_left = (x > 0);
+                if (tile_has_a_neighbour_to_the_left)
                     close(tile_by_xy(ctx->chip_info, x - 1, y));
-                if (x + 1 < ctx->chip_info->width)
+                const bool tile_has_a_neighbour_to_the_right = (x + 1 < ctx->chip_info->width);
+                if (tile_has_a_neighbour_to_the_right)
                     close(tile_by_xy(ctx->chip_info, x + 1, y));
             }
         }
     }
-    if (closed)
+    const bool some_tiles_were_closed = closed != 0;
+    if (some_tiles_were_closed)
         log_info("Pre-routed: %d more tile(s) closed to new cells, a reference route passes through them.\n", closed);
 }
 
@@ -970,19 +990,23 @@ void XilinxImpl::apply_prerouted()
     std::string line;
     while (std::getline(in, line)) {
         auto tab = line.find('\t');
-        if (tab == std::string::npos)
+        const bool line_has_no_tab = (tab == std::string::npos);
+        if (line_has_no_tab)
             continue;
         IdString net_id = ctx->id(line.substr(0, tab));
         auto it = ctx->nets.find(net_id);
-        if (it == ctx->nets.end()) {
-            if (missing < 10)
+        const bool this_design_has_no_such_net = (it == ctx->nets.end());
+        if (this_design_has_no_such_net) {
+            const bool note_this_missing_net = (missing < 10);
+            if (note_this_missing_net)
                 log_info("Pre-routed: net '%s' is not in this design\n", net_id.c_str(ctx));
             missing++;
             continue;
         }
         NetInfo *ni = it->second.get();
         std::vector<std::pair<WireId, PipId>> previous;   // the route this replaces, if any
-        if (!ni->wires.empty()) {
+        const bool route_clocks_got_here_first = !ni->wires.empty();
+        if (route_clocks_got_here_first) {
             // route_clocks got here first.  The reference's tree replaces
             // its work even when it reached every sink: a clock with a sink
             // added since (a probe) would otherwise get a fresh tree, and
@@ -998,7 +1022,9 @@ void XilinxImpl::apply_prerouted()
                 previous.push_back(std::make_pair(w.first, w.second.pip));
             std::stable_sort(previous.begin(), previous.end(),
                              [&](const std::pair<WireId, PipId> &a, const std::pair<WireId, PipId> &b) {
-                                 return (a.second == PipId()) && (b.second != PipId());
+                                 const bool a_is_a_source_wire = (a.second == PipId());
+                                 const bool b_is_a_source_wire = (b.second == PipId());
+                                 return a_is_a_source_wire && !b_is_a_source_wire;
                              });
             for (auto &w : previous)
                 ctx->unbindWire(w.first);
@@ -1007,34 +1033,64 @@ void XilinxImpl::apply_prerouted()
         boost::split(strs, line.substr(tab + 1), boost::is_any_of(";"));
         std::vector<PipId> pips_bound;
         std::vector<WireId> wires_bound;
-        bool ok = true;
+        bool reference_route_collided = false;
         for (size_t i = 0; i + 2 < strs.size(); i += 3) {
             const std::string &wire = strs[i], &pip = strs[i + 1];
-            if (pip.empty()) {
+            const bool entry_is_a_source_wire = pip.empty();
+            if (entry_is_a_source_wire) {
                 WireId w = ctx->getWireByNameStr(wire);
-                if (w == WireId() || (ctx->getBoundWireNet(w) != nullptr && ctx->getBoundWireNet(w) != ni)) { ok = false; break; }
-                if (ctx->getBoundWireNet(w) == nullptr) { ctx->bindWire(w, ni, STRENGTH_LOCKED); wires_bound.push_back(w); }
+                const bool wire_name_did_not_resolve = (w == WireId());
+                if (wire_name_did_not_resolve) {
+                    reference_route_collided = true;
+                    break;
+                }
+                NetInfo *bound_net = ctx->getBoundWireNet(w);
+                const bool wire_is_someone_elses = (bound_net != nullptr && bound_net != ni);
+                if (wire_is_someone_elses) {
+                    reference_route_collided = true;
+                    break;
+                }
+                const bool wire_is_still_free = (bound_net == nullptr);
+                if (wire_is_still_free) {
+                    ctx->bindWire(w, ni, STRENGTH_LOCKED);
+                    wires_bound.push_back(w);
+                }
             } else {
                 PipId p = ctx->getPipByNameStr(pip);
-                if (p == PipId()) { ok = false; break; }
+                const bool pip_name_did_not_resolve = (p == PipId());
+                if (pip_name_did_not_resolve) {
+                    reference_route_collided = true;
+                    break;
+                }
                 WireId dst = ctx->getPipDstWire(p);
-                if (ctx->getBoundWireNet(dst) != nullptr) { ok = false; break; }
+                const bool pip_destination_is_taken = (ctx->getBoundWireNet(dst) != nullptr);
+                if (pip_destination_is_taken) {
+                    reference_route_collided = true;
+                    break;
+                }
                 ctx->bindPip(p, ni, STRENGTH_LOCKED);
                 pips_bound.push_back(p);
             }
         }
-        if (!ok) {
-            for (auto p : pips_bound) ctx->unbindPip(p);
-            for (auto w : wires_bound) ctx->unbindWire(w);
+        if (reference_route_collided) {
+            for (auto p : pips_bound)
+                ctx->unbindPip(p);
+            for (auto w : wires_bound)
+                ctx->unbindWire(w);
             // Put back whatever route_clocks had made, so a net this pass
             // cannot improve is no worse for having been tried.
             for (auto &w : previous) {
-                if (ctx->getBoundWireNet(w.first) != nullptr)
+                const bool wire_has_been_taken_since = (ctx->getBoundWireNet(w.first) != nullptr);
+                if (wire_has_been_taken_since)
                     continue;
-                if (w.second == PipId())
+                const bool wire_came_from_no_pip = (w.second == PipId());
+                if (wire_came_from_no_pip)
                     ctx->bindWire(w.first, ni, STRENGTH_LOCKED);
-                else if (ctx->checkPipAvail(w.second))
-                    ctx->bindPip(w.second, ni, STRENGTH_LOCKED);
+                else {
+                    const bool pip_is_free_again = ctx->checkPipAvail(w.second);
+                    if (pip_is_free_again)
+                        ctx->bindPip(w.second, ni, STRENGTH_LOCKED);
+                }
             }
             collided++;
             continue;
@@ -1046,27 +1102,39 @@ void XilinxImpl::apply_prerouted()
         for (auto &usr : ni->users) {
             for (int i = 0; i < ctx->getNetinfoSinkWireCount(ni, usr); i++) {
                 WireId cur = ctx->getNetinfoSinkWire(ni, usr, i);
-                while (cur != WireId() && ni->wires.count(cur) && !keep.count(cur)) {
+                auto wire_is_still_to_walk = [&]() {
+                    const bool wire_is_off_this_route = cur == WireId() || ni->wires.count(cur) == 0;
+                    if (wire_is_off_this_route)
+                        return false;
+                    const bool wire_is_new_to_the_keep_set = keep.count(cur) == 0;
+                    return wire_is_new_to_the_keep_set;
+                };
+                while (wire_is_still_to_walk()) {
                     keep.insert(cur);
                     PipId p = ni->wires.at(cur).pip;
-                    if (p == PipId())
+                    const bool wire_is_the_source = (p == PipId());
+                    if (wire_is_the_source)
                         break;
                     cur = ctx->getPipSrcWire(p);
                 }
             }
         }
         std::vector<WireId> drop;
-        for (auto &w : ni->wires)
-            if (!keep.count(w.first))
+        for (auto &w : ni->wires) {
+            const bool wire_is_not_on_a_path_to_a_sink = (keep.count(w.first) == 0);
+            if (wire_is_not_on_a_path_to_a_sink)
                 drop.push_back(w.first);
+        }
         for (WireId w : drop) {
             PipId p = ni->wires.at(w).pip;
-            if (p != PipId())
+            const bool wire_was_reached_through_a_pip = (p != PipId());
+            if (wire_was_reached_through_a_pip)
                 ctx->unbindPip(p);
             else
                 ctx->unbindWire(w);
         }
-        if (!drop.empty())
+        const bool route_lost_a_dangling_branch = !drop.empty();
+        if (route_lost_a_dangling_branch)
             pruned += drop.size();
         bound_nets++;
     }

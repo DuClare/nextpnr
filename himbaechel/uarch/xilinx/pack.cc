@@ -460,7 +460,8 @@ void XilinxPacker::pack_lutffs()
         if (ci->type != id_SLICE_FFX)
             continue;
         NetInfo *d = ci->getPort(id_D);
-        if (d == nullptr || d->driver.cell == nullptr)
+        const bool d_is_undriven = (d == nullptr || d->driver.cell == nullptr);
+        if (d_is_undriven)
             continue; // an undriven D (yosys's 'x') is not a pairing
         if (d->driver.cell->type == id_SLICE_LUTX && d->driver.port == id_O6) {
             CellInfo *lut = d->driver.cell;

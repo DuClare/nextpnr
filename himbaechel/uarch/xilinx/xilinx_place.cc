@@ -599,16 +599,30 @@ bool XilinxImpl::xc7_logic_tile_valid(IdString tile_type, const LogicTileStatus 
 
 bool XilinxImpl::isBelLocationValid(BelId bel, bool explain_invalid) const
 {
-    if (!frozen_tiles.empty() && frozen_tiles.count(bel.tile)) {
-        auto unpinned = [&](CellInfo *ci) { return ci != nullptr && !ci->attrs.count(id_BEL); };
-        if (is_logic_tile(bel) && tile_status.at(bel.tile).lts) {
-            for (CellInfo *ci : tile_status.at(bel.tile).lts->cells)
-                if (unpinned(ci))
-                    return false;
-        } else if (is_bram_tile(bel) && tile_status.at(bel.tile).bts) {
-            for (CellInfo *ci : tile_status.at(bel.tile).bts->cells)
-                if (unpinned(ci))
-                    return false;
+    const bool tile_is_closed_to_new_cells = !frozen_tiles.empty() && frozen_tiles.count(bel.tile) != 0;
+    if (tile_is_closed_to_new_cells) {
+        // a cell that would be new in a closed tile: the design did not pin it there
+        auto would_be_a_new_cell = [&](CellInfo *ci) { return ci != nullptr && ci->attrs.count(id_BEL) == 0; };
+        const bool bel_is_in_a_logic_tile = is_logic_tile(bel);
+        const bool bel_is_in_a_bram_tile = is_bram_tile(bel);
+        if (bel_is_in_a_logic_tile) {
+            const bool the_logic_tile_has_a_status = tile_status.at(bel.tile).lts != nullptr;
+            if (the_logic_tile_has_a_status) {
+                for (CellInfo *ci : tile_status.at(bel.tile).lts->cells) {
+                    const bool this_would_be_a_new_cell = would_be_a_new_cell(ci);
+                    if (this_would_be_a_new_cell)
+                        return false;
+                }
+            }
+        } else if (bel_is_in_a_bram_tile) {
+            const bool the_bram_tile_has_a_status = tile_status.at(bel.tile).bts != nullptr;
+            if (the_bram_tile_has_a_status) {
+                for (CellInfo *ci : tile_status.at(bel.tile).bts->cells) {
+                    const bool this_would_be_a_new_cell = would_be_a_new_cell(ci);
+                    if (this_would_be_a_new_cell)
+                        return false;
+                }
+            }
         }
     }
     if (is_logic_tile(bel)) {

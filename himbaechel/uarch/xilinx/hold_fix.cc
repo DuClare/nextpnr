@@ -489,8 +489,12 @@ void XilinxImpl::fixup_hold()
             // output mux.  If the source's slice has no exit left (a 5FF whose
             // Q already uses it), the buffer would make an unroutable site:
             // leave this arc alone rather than hand it to the router.
-            if (net->driver.cell->bel != BelId() && !isBelLocationValid(net->driver.cell->bel)) {
-                if (getenv("HOLDFIX_VERBOSE"))
+            const bool source_is_placed = net->driver.cell->bel != BelId();
+            const bool source_slice_has_no_exit_for_a_buffer =
+                    source_is_placed && !isBelLocationValid(net->driver.cell->bel);
+            if (source_slice_has_no_exit_for_a_buffer) {
+                const bool holdfix_verbose = getenv("HOLDFIX_VERBOSE") != nullptr;
+                if (holdfix_verbose)
                     log_info("Hold-fix: %s -> %s.%s left: the source's slice has no output mux free for a buffer\n",
                              ctx->nameOf(net), ctx->nameOf(sink), t.sink_port.c_str(ctx));
                 sink->disconnectPort(t.sink_port);
@@ -545,28 +549,38 @@ void XilinxImpl::fixup_hold()
                     ctx->nets.erase(buf_out->name);
                 // The net is as it was, so it is not one of the touched: a
                 // net whose buffer never landed must not be ripped up.
-                if (orig != nullptr)
+                const bool the_sink_was_reconnected_to_a_net = (orig != nullptr);
+                if (the_sink_was_reconnected_to_a_net)
                     unbuffered_nets.insert(orig->name);
             }
             for (IdString nn : unbuffered_nets) {
                 bool still_buffered = false;
-                for (auto &q : pending)
-                    if (ctx->cells.count(q.buf->name) && q.buf->getPort(id_A1) != nullptr &&
-                        q.buf->getPort(id_A1)->name == nn)
+                for (auto &q : pending) {
+                    const bool buffer_survived =
+                            ctx->cells.count(q.buf->name) != 0 && q.buf->getPort(id_A1) != nullptr;
+                    const bool buffer_still_feeds_this_net = buffer_survived && q.buf->getPort(id_A1)->name == nn;
+                    if (buffer_still_feeds_this_net)
                         still_buffered = true;
-                if (!still_buffered)
+                }
+                const bool no_buffer_is_left_on_this_net = !still_buffered;
+                if (no_buffer_is_left_on_this_net)
                     touched_nets.erase(nn);
             }
-            if (failed)
+            const bool some_buffers_had_no_bel = failed != 0;
+            if (some_buffers_had_no_bel)
                 log_warning("Hold-fix pass %d: %d buffer(s) had no free LUT bel nearby, skipped.\n", pass, failed);
         }
-        if (no_exit)
+        const bool some_arcs_were_left_unbuffered = no_exit != 0;
+        if (some_arcs_were_left_unbuffered)
             log_warning("Hold-fix pass %d: %d arc(s) left unbuffered, their source's slice has no output mux free.\n",
                         pass, no_exit);
         // Only if a buffer actually landed: with none placed the netlist is
         // exactly as it was, and rerouting would move routing that is
         // already good -- in a replay, routing that was meant to be frozen.
-        if (placed > 0 && !touched_nets.empty()) {
+        const bool a_buffer_was_placed = placed > 0;
+        const bool some_net_was_touched = !touched_nets.empty();
+        const bool a_reroute_is_warranted = a_buffer_was_placed && some_net_was_touched;
+        if (a_reroute_is_warranted) {
 
             // Rip up only the touched source nets (minimal perturbation).  Each
             // buffer's input is a new sink on its source net, so rerouting just
@@ -585,21 +599,29 @@ void XilinxImpl::fixup_hold()
             // route, which the incremental reroute cannot take back.  Locked
             // routes (a replay's reference) stay.
             pool<int> src_tiles;
-            for (IdString nn : touched_nets)
-                if (ctx->nets.count(nn) && ctx->nets.at(nn)->driver.cell != nullptr &&
-                    ctx->nets.at(nn)->driver.cell->bel != BelId())
+            for (IdString nn : touched_nets) {
+                const bool net_still_exists = ctx->nets.count(nn) != 0;
+                const bool source_is_placed = net_still_exists && ctx->nets.at(nn)->driver.cell != nullptr &&
+                                              ctx->nets.at(nn)->driver.cell->bel != BelId();
+                if (source_is_placed)
                     src_tiles.insert(ctx->nets.at(nn)->driver.cell->bel.tile);
+            }
             pool<IdString> ripup(touched_nets.begin(), touched_nets.end());
             for (auto &n : ctx->nets) {
                 NetInfo *ni = n.second.get();
-                if (ni->driver.cell == nullptr || ni->driver.cell->bel == BelId() ||
-                    !src_tiles.count(ni->driver.cell->bel.tile))
+                const bool net_is_not_driven_from_a_touched_source_tile =
+                        ni->driver.cell == nullptr || ni->driver.cell->bel == BelId() ||
+                        src_tiles.count(ni->driver.cell->bel.tile) == 0;
+                if (net_is_not_driven_from_a_touched_source_tile)
                     continue;
-                bool locked = false;
-                for (auto &w : ni->wires)
-                    if (w.second.strength >= STRENGTH_LOCKED)
-                        locked = true;
-                if (!locked)
+                bool net_carries_a_locked_route = false;
+                for (auto &w : ni->wires) {
+                    const bool wire_is_locked = w.second.strength >= STRENGTH_LOCKED;
+                    if (wire_is_locked)
+                        net_carries_a_locked_route = true;
+                }
+                const bool net_is_free_to_rip_up = !net_carries_a_locked_route;
+                if (net_is_free_to_rip_up)
                     ripup.insert(n.first);
             }
             for (IdString nn : ripup) {

@@ -95,18 +95,25 @@ bool XilinxPacker::try_preplace(CellInfo *cell, IdString port)
 
 void XilinxPacker::preplace_unique(CellInfo *cell)
 {
-    if (cell->attrs.count(id_BEL) || cell->bel != BelId())
+    const bool the_design_already_placed_this_cell = cell->attrs.count(id_BEL) != 0 || cell->bel != BelId();
+    if (the_design_already_placed_this_cell)
         return;
     // a site another cell of this type is pinned to (BEL attribute, not yet
     // bound) is not available either
     pool<BelId> claimed;
-    for (auto &other : ctx->cells)
-        if (other.second->type == cell->type && other.second->attrs.count(id_BEL))
+    for (auto &other : ctx->cells) {
+        const bool another_cell_of_this_type_is_pinned =
+                other.second->type == cell->type && other.second->attrs.count(id_BEL) != 0;
+        if (another_cell_of_this_type_is_pinned)
             claimed.insert(ctx->getBelByNameStr(other.second->attrs.at(id_BEL).as_string()));
+    }
     for (auto bel : ctx->getBels()) {
-        if (claimed.count(bel))
+        const bool bel_is_claimed_by_a_pinned_cell = claimed.count(bel) != 0;
+        if (bel_is_claimed_by_a_pinned_cell)
             continue;
-        if (ctx->checkBelAvail(bel) && ctx->getBelType(bel) == cell->type) {
+        const bool bel_is_free_and_of_this_type =
+                ctx->checkBelAvail(bel) && ctx->getBelType(bel) == cell->type;
+        if (bel_is_free_and_of_this_type) {
             ctx->bindBel(bel, cell, STRENGTH_LOCKED);
             return;
         }

@@ -236,7 +236,8 @@ struct Router2
                     auto &nd = nets.at(bound->udata);
                     nd.wires[wire] = std::make_pair(bound->wires.at(wire).pip, 0);
                     pwd.curr_cong = 1;
-                    if (bound->wires.at(wire).strength >= STRENGTH_PLACER) {
+                    const bool wire_is_reserved_for_this_net = bound->wires.at(wire).strength >= STRENGTH_PLACER;
+                    if (wire_is_reserved_for_this_net) {
                         // Reserved for its net: no other net may enter, and the
                         // net itself may only use it through its bound pip
                         // (checked on expansion), but the net's remaining sinks
@@ -953,7 +954,8 @@ struct Router2
                                 : (!t.fwd_queue.empty() || !t.bwd_queue.empty())) &&
                    ((!is_bb && midpoint_wire == -1) || iter < toexplore)) {
                 ++iter;
-                if ((iter % 5000000) == 0)
+                const bool time_to_report_progress = (iter % 5000000) == 0;
+                if (time_to_report_progress)
                     log_warning("route_arc: net %s, %s -> %s: %d iterations (fwd %zu, bwd %zu, bb %d)\n", ctx->nameOf(net),
                                 ctx->nameOfWire(src_wire), ctx->nameOfWire(dst_wire), iter, t.fwd_queue.size(),
                                 t.bwd_queue.size(), int(is_bb));
@@ -1228,7 +1230,9 @@ struct Router2
                              return get_arc_crit(net, a.first) > get_arc_crit(net, b.first);
                          });
         for (auto a : t.route_arcs) {
-            auto res1 = (nd.bb_useless && !is_mt) ? ARC_RETRY_WITHOUT_BB : route_arc(t, net, a.first, a.second, is_mt, true);
+            const bool this_net_needs_no_bounding_box = nd.bb_useless && !is_mt;
+            auto res1 = this_net_needs_no_bounding_box ? ARC_RETRY_WITHOUT_BB
+                                                      : route_arc(t, net, a.first, a.second, is_mt, true);
             if (res1 == ARC_FATAL)
                 return false; // Arc failed irrecoverably
             else if (res1 == ARC_RETRY_WITHOUT_BB) {
@@ -1240,7 +1244,8 @@ struct Router2
                     ROUTE_LOG_DBG("Rerouting arc %d.%d of net '%s' without bounding box, possible tricky routing...\n",
                                   a.first.idx(), int(a.second), ctx->nameOf(net));
                     auto res2 = route_arc(t, net, a.first, a.second, is_mt, false);
-                    if (res2 == ARC_SUCCESS)
+                    const bool the_unbounded_search_was_needed = (res2 == ARC_SUCCESS);
+                    if (the_unbounded_search_was_needed)
                         nd.bb_useless = true;
                     // If this also fails, no choice but to give up
                     if (res2 != ARC_SUCCESS) {
