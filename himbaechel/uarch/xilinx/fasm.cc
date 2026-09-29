@@ -1621,15 +1621,22 @@ struct FasmBackend
             write_bit("ISERDES.MODE.MASTER");
             write_bit("ISERDES.NUM_CE.N1");
 
-            // Switch IDELMUXE3 to include the IDELAY element, if we have an IDELAYE2 driving D
+            // When an IDELAYE2 drives D the IFF must capture the delayed
+            // path: IFFDELMUXE3.P0, the same state the ISERDESE2 branch
+            // below writes for IOBDELAY=IFD.  Vivado golden, measured on
+            // xc7a100t across all three edge modes (issue #22): with an
+            // IDELAYE2 in front of the IDDR Vivado sets IFFDELMUXE3.P0 and
+            // leaves IDELMUXE3 at P1; with the IDDR fed straight from the
+            // IBUF it leaves both at P1 -- it never switches the
+            // combinatorial-path mux for an IDDR, so no IDELMUXE3 write
+            // belongs on this path at all.  (Port of nextpnr-xilinx
+            // 8b33d912's polarity, resolved by that golden.)
             NetInfo *d = ci->getPort(id_D);
             if (d == nullptr || d->driver.cell == nullptr)
                 log_error("%s '%s' has disconnected D input\n", ci->type.c_str(ctx), ctx->nameOf(ci));
             CellInfo *drv = d->driver.cell;
             if (boost::contains(drv->type.str(ctx), "IDELAYE2"))
-                write_bit("IDELMUXE3.P0");
-            else
-                write_bit("IDELMUXE3.P1");
+                write_bit("IFFDELMUXE3.P0");
 
             // Clock edge.  DDR_CLK_EDGE is a three-valued parameter encoded in
             // two bits, and the third value is the state where BOTH bits are
