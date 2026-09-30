@@ -194,6 +194,7 @@ struct XC7Packer : public XilinxPacker
     SiteIndex get_ologic_site(BelId io_bel);
     SiteIndex get_ilogic_site(BelId io_bel);
     SiteIndex get_ilogic_site_for_ologic(SiteIndex ologic_site);
+    SiteIndex get_ologic_site_for_ilogic(SiteIndex ilogic_site);
     SiteIndex get_ioctrl_site(BelId io_bel);
     SiteIndex get_odelay_site(BelId io_bel);
     SiteIndex get_idelay_site(BelId io_bel);
