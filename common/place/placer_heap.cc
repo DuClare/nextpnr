@@ -465,6 +465,7 @@ class HeAPPlacer
     void place_constraints()
     {
         size_t placed_cells = 0;
+        std::vector<BelId> constrained;
         // Initial constraints placer
         for (auto &cell_entry : ctx->cells) {
             CellInfo *cell = cell_entry.second.get();
@@ -487,19 +488,64 @@ class HeAPPlacer
                               loc_name.c_str(), bel_type.c_str(ctx), cell->name.c_str(ctx), cell->type.c_str(ctx));
                 }
                 auto bound_cell = ctx->getBoundBelCell(bel);
-                if (bound_cell) {
+                const bool packing_already_put_it_there = (bound_cell == cell);
+                if (packing_already_put_it_there) {
+                    // packing put it there already (a clock buffer on its
+                    // dedicated route, say); the constraint just agrees
+                    constrained.push_back(bel);
+                    placed_cells++;
+                    continue;
+                }
+                const bool bel_is_taken_by_another_cell = (bound_cell != nullptr);
+                if (bel_is_taken_by_another_cell) {
                     log_error("Cell \'%s\' cannot be bound to bel \'%s\' since it is already bound to cell \'%s\'\n",
                               cell->name.c_str(ctx), loc_name.c_str(), bound_cell->name.c_str(ctx));
                 }
 
                 ctx->bindBel(bel, cell, STRENGTH_USER);
-                if (!ctx->isBelLocationValid(bel, /* explain_invalid */ true)) {
-                    IdString bel_type = ctx->getBelType(bel);
-                    log_error("Bel \'%s\' of type \'%s\' is not valid for cell "
-                              "\'%s\' of type \'%s\'\n",
-                              loc_name.c_str(), bel_type.c_str(ctx), cell->name.c_str(ctx), cell->type.c_str(ctx));
-                }
+                constrained.push_back(bel);
                 placed_cells++;
+            }
+        }
+        // A constrained cluster root carries its unconstrained members with
+        // it (the packer's own cells in a pinned cluster: a constant LUT
+        // beside a pinned mux, say), at the cluster's own offsets.
+        for (BelId bel : std::vector<BelId>(constrained)) {
+            CellInfo *root = ctx->getBoundBelCell(bel);
+            const bool cell_is_not_a_cluster_root =
+                    root->cluster == ClusterId() || ctx->getClusterRootCell(root->cluster) != root;
+            if (cell_is_not_a_cluster_root)
+                continue;
+            std::vector<std::pair<CellInfo *, BelId>> placement;
+            const bool cluster_does_not_fit_around_this_root = !ctx->getClusterPlacement(root->cluster, bel, placement);
+            if (cluster_does_not_fit_around_this_root)
+                continue;
+            for (auto &pb : placement) {
+                const bool member_already_has_a_bel = (pb.first->bel != BelId());
+                if (member_already_has_a_bel)
+                    continue;
+                const bool wanted_bel_is_taken = (ctx->getBoundBelCell(pb.second) != nullptr);
+                if (wanted_bel_is_taken)
+                    log_error("cluster member '%s' of pinned '%s' needs bel '%s', which '%s' holds\n",
+                              pb.first->name.c_str(ctx), root->name.c_str(ctx), ctx->nameOfBel(pb.second),
+                              ctx->getBoundBelCell(pb.second)->name.c_str(ctx));
+                ctx->bindBel(pb.second, pb.first, STRENGTH_USER);
+                constrained.push_back(pb.second);
+                placed_cells++;
+            }
+        }
+        // A bel's validity depends on what else is in its site (a LUT and
+        // its flip-flop, the flip-flops sharing a slice's control set), so a
+        // set of constraints -- a whole frozen placement -- is only judged
+        // once every member is bound.
+        for (BelId bel : constrained) {
+            const bool bel_is_not_valid_where_it_is = !ctx->isBelLocationValid(bel, /* explain_invalid */ true);
+            if (bel_is_not_valid_where_it_is) {
+                CellInfo *cell = ctx->getBoundBelCell(bel);
+                IdString bel_type = ctx->getBelType(bel);
+                log_error("Bel \'%s\' of type \'%s\' is not valid for cell "
+                          "\'%s\' of type \'%s\'\n",
+                          ctx->nameOfBel(bel), bel_type.c_str(ctx), cell->name.c_str(ctx), cell->type.c_str(ctx));
             }
         }
         log_info("Placed %d cells based on constraints.\n", int(placed_cells));
