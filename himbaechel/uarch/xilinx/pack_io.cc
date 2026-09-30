@@ -1082,13 +1082,39 @@ void XC7Packer::pack_iologic()
     }
 
     // OFB-loopback pairs: an OSERDESE2 whose OFB feeds an ISERDESE2 has no
-    // IOB to anchor on, so bind the pair to a free OSERDES/ISERDES site pair.
+    // IOB to anchor on, so bind the pair to a free OSERDES/ISERDES site pair
+    // -- one whose tile can actually carry the feedback, and the bel the
+    // design pinned if it pinned one.
     // (Port of nextpnr-xilinx unconstrained-OSERDESE2 support.)
     for (auto ci : unconstrained_oserdes) {
-        BelId oserdes_bel;
-        for (auto bel : ctx->getBels()) {
-            bool is_free_oserdes_bel = ctx->getBelType(bel) == id_OSERDESE2_OSERDESE2 && ctx->checkBelAvail(bel);
-            if (is_free_oserdes_bel) {
+        NetInfo *ofb = ci->getPort(id_OFB);
+        NPNR_ASSERT(ofb != nullptr && ofb->users.entries() == 1);
+        CellInfo *iserdes = (*ofb->users.begin()).cell;
+        NPNR_ASSERT(iserdes->type == id_ISERDESE2);
+
+        BelId oserdes_bel = BelId();
+        const bool oserdes_was_pinned = ci->attrs.count(id_BEL) != 0;
+        if (oserdes_was_pinned) {
+            oserdes_bel = ctx->getBelByNameStr(ci->attrs.at(id_BEL).as_string());
+            const bool pinned_bel_resolved = (oserdes_bel != BelId());
+            if (!pinned_bel_resolved)
+                log_error("OSERDESE2 '%s' is pinned to a bel this device does not have ('%s')\n", ctx->nameOf(ci),
+                          ci->attrs.at(id_BEL).as_string().c_str());
+        } else {
+            for (auto bel : ctx->getBels()) {
+                bool is_free_oserdes_bel = ctx->getBelType(bel) == id_OSERDESE2_OSERDESE2 && ctx->checkBelAvail(bel);
+                if (!is_free_oserdes_bel)
+                    continue;
+                // A _SING I/O tile carries a single IOLOGIC/OLOGIC pair and the
+                // database has no feedback pips for it, so a pair placed there
+                // captures nothing: the DDR3 PHY's read-training ISERDES then
+                // sits in BITSLIP_DQS_TRAIN_1 for ever and the controller never
+                // reaches DONE_CALIBRATE.  Measured on an Arty S7 (xc7s50): the
+                // pair the placer put in LIOI3_SING_X0Y149 never saw the
+                // training pattern, the one in LIOI3_X0Y147 did.
+                const bool tile_has_no_feedback_pips = boost::contains(uarch->tile_name(bel.tile), "_SING");
+                if (tile_has_no_feedback_pips)
+                    continue;
                 oserdes_bel = bel;
                 break;
             }
@@ -1096,15 +1122,29 @@ void XC7Packer::pack_iologic()
         if (oserdes_bel == BelId())
             log_error("IO placer ran out of available OSERDESE2 bels (%d unconstrained)\n",
                       int(unconstrained_oserdes.size()));
+        const bool oserdes_bel_is_taken = !ctx->checkBelAvail(oserdes_bel);
+        if (oserdes_bel_is_taken)
+            log_error("OSERDESE2 '%s' cannot take bel '%s': '%s' holds it\n", ctx->nameOf(ci), ctx->nameOfBel(oserdes_bel),
+                      ctx->nameOf(ctx->getBoundBelCell(oserdes_bel)));
         ctx->bindBel(oserdes_bel, ci, STRENGTH_LOCKED);
 
-        NetInfo *ofb = ci->getPort(id_OFB);
-        NPNR_ASSERT(ofb != nullptr && ofb->users.entries() == 1);
-        CellInfo *iserdes = (*ofb->users.begin()).cell;
-        NPNR_ASSERT(iserdes->type == id_ISERDESE2);
-        SiteIndex il_site = get_ilogic_site_for_ologic(uarch->get_bel_site(oserdes_bel));
-        BelId iserdes_bel = uarch->get_site_bel(il_site, id_ISERDESE2);
+        BelId iserdes_bel = BelId();
+        const bool iserdes_was_pinned = iserdes->attrs.count(id_BEL) != 0;
+        if (iserdes_was_pinned) {
+            iserdes_bel = ctx->getBelByNameStr(iserdes->attrs.at(id_BEL).as_string());
+            const bool pinned_bel_resolved = (iserdes_bel != BelId());
+            if (!pinned_bel_resolved)
+                log_error("ISERDESE2 '%s' is pinned to a bel this device does not have ('%s')\n", ctx->nameOf(iserdes),
+                          iserdes->attrs.at(id_BEL).as_string().c_str());
+        } else {
+            SiteIndex il_site = get_ilogic_site_for_ologic(uarch->get_bel_site(oserdes_bel));
+            iserdes_bel = uarch->get_site_bel(il_site, id_ISERDESE2);
+        }
         NPNR_ASSERT(iserdes_bel != BelId());
+        const bool iserdes_bel_is_taken = !ctx->checkBelAvail(iserdes_bel);
+        if (iserdes_bel_is_taken)
+            log_error("ISERDESE2 '%s' cannot take bel '%s': '%s' holds it\n", ctx->nameOf(iserdes),
+                      ctx->nameOfBel(iserdes_bel), ctx->nameOf(ctx->getBoundBelCell(iserdes_bel)));
         ctx->bindBel(iserdes_bel, iserdes, STRENGTH_LOCKED);
     }
 

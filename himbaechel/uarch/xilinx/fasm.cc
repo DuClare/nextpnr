@@ -1811,6 +1811,13 @@ struct FasmBackend
 
             push("ISERDES");
             write_bit("IN_USE");
+            // A capture that comes from the partner OSERDESE2's feedback (the
+            // read-training reference of a DDR3 PHY) needs the OFB input mux
+            // selected; the packer places the pair either way, but without this
+            // bit the datapath still reads the pad side and the reference never
+            // carries the training pattern.  (The fork wrote it from the same
+            // parameter: nextpnr-xilinx fasm.cc.)
+            write_bit("OFB_USED", str_or_default(ci->params, ctx->id("OFB_USED"), "FALSE") == "TRUE");
             int width = int_or_default(ci->params, id_DATA_WIDTH, 8);
             std::string mode = str_or_default(ci->params, id_INTERFACE_TYPE, "NETWORKING");
             std::string rate = str_or_default(ci->params, id_DATA_RATE, "DDR");
