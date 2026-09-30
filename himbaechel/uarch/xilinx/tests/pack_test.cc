@@ -68,13 +68,54 @@ TEST_F(XilinxPackTest, pack_cfg_startupe2)
 
 TEST_F(XilinxPackTest, pack_cfg_bscane2_chain)
 {
-    // BSCANE2 packs to BSCAN, validates JTAG_CHAIN, and preplaces (WP6)
+    // BSCANE2 packs to BSCAN, validates JTAG_CHAIN, and is bound to the site
+    // its chain selects: USER<n> is served by BSCAN_X0Y<n-1>, so an instance
+    // left on another BSCAN site answers another chain's user register (WP6).
     CellInfo *ci = ctx->createCell(ctx->id("bscan"), id_BSCANE2);
     ci->params[id_JTAG_CHAIN] = Property(2);
     XC7Packer p(ctx, xil);
     p.pack_cfg();
     EXPECT_EQ(ci->type, id_BSCAN);
-    EXPECT_NE(ci->bel, BelId());
+    ASSERT_NE(ci->bel, BelId());
+    EXPECT_EQ(xil->get_site_name(xil->get_bel_site(ci->bel)), ctx->id("BSCAN_X0Y1"));
+}
+
+TEST_F(XilinxPackTest, pack_cfg_bscane2_two_chains_do_not_share_a_site)
+{
+    // The design that showed the bug: a JTAG clock controller on one chain
+    // and a logic analyser on another.  Each instance must get the site
+    // serving its own chain, not whichever BSCAN site is free first.
+    CellInfo *user3 = ctx->createCell(ctx->id("user3"), id_BSCANE2);
+    user3->params[id_JTAG_CHAIN] = Property(3);
+    CellInfo *user1 = ctx->createCell(ctx->id("user1"), id_BSCANE2);
+    user1->params[id_JTAG_CHAIN] = Property(1);
+
+    XC7Packer p(ctx, xil);
+    p.pack_cfg();
+
+    ASSERT_NE(user3->bel, BelId());
+    ASSERT_NE(user1->bel, BelId());
+    EXPECT_EQ(xil->get_site_name(xil->get_bel_site(user3->bel)), ctx->id("BSCAN_X0Y2"));
+    EXPECT_EQ(xil->get_site_name(xil->get_bel_site(user1->bel)), ctx->id("BSCAN_X0Y0"));
+}
+
+TEST_F(XilinxPackTest, pack_cfg_bscane2_duplicate_chain_is_an_error)
+{
+    // Only one instance can serve a chain -- the chain's site has one BSCAN
+    // bel -- so a second instance asking for the same chain is reported
+    // rather than quietly bound to another chain's site.
+    CellInfo *first = ctx->createCell(ctx->id("first"), id_BSCANE2);
+    first->params[id_JTAG_CHAIN] = Property(2);
+    CellInfo *second = ctx->createCell(ctx->id("second"), id_BSCANE2);
+    second->params[id_JTAG_CHAIN] = Property(2);
+
+    XC7Packer p(ctx, xil);
+    EXPECT_THROW(p.pack_cfg(), log_execution_error_exception);
+
+    // Whichever instance got there first holds the site serving USER2.
+    CellInfo *placed = first->bel != BelId() ? first : second;
+    ASSERT_NE(placed->bel, BelId());
+    EXPECT_EQ(xil->get_site_name(xil->get_bel_site(placed->bel)), ctx->id("BSCAN_X0Y1"));
 }
 
 TEST_F(XilinxPackTest, clocking_bufh_bufhce)

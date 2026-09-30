@@ -1199,6 +1199,38 @@ void XC7Packer::pack_idelayctrl()
     generic_xform(ioctrl_rules);
 }
 
+// The BSCAN bel of every site that serves a user JTAG chain, keyed by the
+// chain number.
+//
+// USER<n> is served by site BSCAN_X0Y<n-1>.  The site is not just an address
+// the cell could have taken: its pins *are* that chain's SEL, CAPTURE, SHIFT
+// and DRCK wires, so a BSCAN bound elsewhere sees the other chain, however
+// its JTAG_CHAIN parameter reads -- that parameter only drives the
+// JTAG_CHAIN_<n> bit, a device-wide configuration, not the routing.
+//
+// A site's name is what says which chain it serves, and the name comes from
+// the architecture rather than from text matched against a bel name: this is
+// a lookup of the site serving a chain, so a device database whose names do
+// not match must give an error, not leave the instance to be placed anywhere.
+dict<int, BelId> XC7Packer::bscan_bels_by_chain()
+{
+    const std::string bscan_site_prefix = "BSCAN_X0Y";
+    dict<int, BelId> by_chain;
+    for (BelId bel : ctx->getBels()) {
+        bool is_bscan_bel = ctx->getBelType(bel) == id_BSCAN;
+        if (!is_bscan_bel)
+            continue;
+        std::string site_name = uarch->get_site_name(uarch->get_bel_site(bel)).str(ctx);
+        bool is_bscan_site = boost::starts_with(site_name, bscan_site_prefix);
+        if (!is_bscan_site)
+            continue;
+        // BSCAN_X0Y<chain-1> serves USER<chain>.
+        int chain = std::stoi(site_name.substr(bscan_site_prefix.size())) + 1;
+        by_chain[chain] = bel;
+    }
+    return by_chain;
+}
+
 void XC7Packer::pack_cfg()
 {
     log_info("Packing cfg...\n");
@@ -1213,6 +1245,10 @@ void XC7Packer::pack_cfg()
     cfg_rules[id_USR_ACCESSE2].new_type = id_USR_ACCESS_USR_ACCESS;
     generic_xform(cfg_rules);
 
+    // Read once: which site serves which chain is a property of the device,
+    // not of any one instance.
+    dict<int, BelId> bscan_bel_for_chain = bscan_bels_by_chain();
+
     for (auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
         if (ci->type == id_BSCAN) {
@@ -1221,14 +1257,33 @@ void XC7Packer::pack_cfg()
             if (!chain_in_range)
                 log_error("Instance '%s': Invalid JTAG_CHAIN number of '%d'. Allowed values are: 1-4.\n",
                           ci->name.c_str(ctx), chain);
+            // Pin the instance to the site its chain selects, unless the
+            // design pinned the bel itself.
+            bool design_left_the_bel_unset = !ci->attrs.count(id_BEL) && ci->bel == BelId();
+            if (design_left_the_bel_unset) {
+                auto found = bscan_bel_for_chain.find(chain);
+                bool device_has_no_site_for_this_chain = found == bscan_bel_for_chain.end();
+                if (device_has_no_site_for_this_chain)
+                    log_error("Instance '%s': this device has no BSCAN site for JTAG_CHAIN %d.\n",
+                              ci->name.c_str(ctx), chain);
+                BelId chain_bel = found->second;
+                bool site_is_taken_by_another_cell = !ctx->checkBelAvail(chain_bel);
+                if (site_is_taken_by_another_cell)
+                    log_error("Instance '%s': site %s for JTAG_CHAIN %d is taken by '%s'.\n", ci->name.c_str(ctx),
+                              ctx->nameOfBel(chain_bel), chain, ctx->nameOf(ctx->getBoundBelCell(chain_bel)));
+                ctx->bindBel(chain_bel, ci, STRENGTH_LOCKED);
+            }
         }
         // These configuration primitives each live in a single dedicated
         // site; the placer cannot discover that site on its own, so without
         // preplacement it aborts with "Unable to find legal placement for
         // cell".  (Port of nextpnr-xilinx d42d6c9b.)
+        // A BSCAN is not one of them: it is bound to the site its JTAG_CHAIN
+        // selects, above -- leaving it to take any free BSCAN site is the bug
+        // that binding exists to prevent.
         bool is_single_site_config_primitive =
-                ci->type.in(id_BSCAN, id_DCIRESET_DCIRESET, id_DNA_PORT_DNA_PORT, id_EFUSE_USR_EFUSE_USR,
-                            id_ICAP_ICAP, id_FRAME_ECC_FRAME_ECC, id_STARTUP_STARTUP, id_USR_ACCESS_USR_ACCESS);
+                ci->type.in(id_DCIRESET_DCIRESET, id_DNA_PORT_DNA_PORT, id_EFUSE_USR_EFUSE_USR, id_ICAP_ICAP,
+                            id_FRAME_ECC_FRAME_ECC, id_STARTUP_STARTUP, id_USR_ACCESS_USR_ACCESS);
         if (is_single_site_config_primitive)
             preplace_unique(ci);
     }
